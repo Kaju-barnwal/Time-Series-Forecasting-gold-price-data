@@ -1,0 +1,155 @@
+---
+title: "Time Series Analysis of Annual Gold Prices in India (RBI)"
+author: "Kaju (Kajal Kumari)"
+output: html_document:
+ 
+---
+
+# 🎯 Aim
+To perform a comprehensive time series analysis on **annual gold price data from the RBI database**, expressed in **₹ (Rupees) per kilogram** (as provided in the dataset). We will examine underlying trends, autocorrelation, and fit **ARIMA** models, comparing AR and MA components by AIC/BIC to identify an optimal lag structure and provide insights for forecasting.
+
+> **Data Source:** Reserve Bank of India (RBI) — <https://data.rbi.org.in/>  
+> **Period:** as per the CSV provided (1970–2024 in the sample)
+
+# 🪙 Introduction
+Gold is a key financial and cultural asset in India, acting as a hedge against inflation and currency risk. Using RBI annual price data, we analyze historical patterns, test stationarity, examine ACF/PACF, fit AR/MA-only ARIMA models over lags 1–5, compare with `auto.arima()`, interpret coefficients, and generate forecasts.
+
+# 📦 Libraries
+
+# Core
+a <- c('tidyverse','forecast','tseries','lmtest','knitr')
+new <- a[!a %in% installed.packages()[,1]]
+if(length(new)) install.packages(new, dependencies = TRUE)
+invisible(lapply(a, library, character.only = TRUE))
+
+
+# 📥 Step 1: Load & Create Time Series
+Update the file path below to your CSV. The CSV is expected to have columns **Year** and **GoldPrice**.
+
+
+# Path to your CSV (edit this)
+file_path <- "C:/Users/Lenovo/Downloads/Average Price of Gold in India 1971-2024.csv"
+
+Gold_Data <- read.csv(file_path)
+# Standardize column names if needed
+names(Gold_Data) <- c("Year","GoldPrice")
+str(Gold_Data)
+head(Gold_Data)
+
+# Build annual time series (frequency=1)
+gold_ts <- ts(Gold_Data$GoldPrice,
+              start = min(Gold_Data$Year),
+              end   = max(Gold_Data$Year),
+              frequency = 1)
+
+
+# 📈 Step 2: Explore Original Series (Trend & Autocorrelation)
+ts.plot(gold_ts, main = "Gold Price Over Years", ylab = "Gold Price (₹ per kg)", xlab = "Year")
+
+
+acf(gold_ts, main = "ACF of Gold Prices")
+pacf(gold_ts, main = "PACF of Gold Prices")
+
+
+**Durbin–Watson Test (linear trend proxy):**
+time <- seq_along(Gold_Data$GoldPrice)
+model_lin <- lm(Gold_Data$GoldPrice ~ time)
+(lmtest::dwtest(model_lin))
+
+
+> *Interpretation guide:* Very low DW with significant p-value ⇒ strong positive autocorrelation ⇒ non-stationary series.
+
+# 🔁 Step 3: Difference to Achieve Stationarity & Re-check ACF/PACF
+gold_diff <- diff(gold_ts)
+ts.plot(gold_diff, main = "Differenced Gold Price Series", ylab = "Δ Gold Price", xlab = "Year")
+
+
+acf(gold_diff, main = "ACF of Differenced Gold Prices")
+pacf(gold_diff, main = "PACF of Differenced Gold Prices")
+
+
+**DW on differenced series (trend proxy):**
+time_diff <- seq_along(gold_diff)
+model_diff <- lm(gold_diff ~ time_diff)
+lmtest::dwtest(model_diff)
+
+
+# 🧮 Step 4: AR vs MA Model Sweep (AIC/BIC) on Differenced Series
+We compare ARIMA(p,0,0) and ARIMA(0,0,q) for lags 1–5 **on the differenced series** `gold_diff`.
+
+
+results <- purrr::map_dfr(1:5, function(lag){
+  ar_model <- arima(gold_diff, order = c(lag,0,0))
+  ma_model <- arima(gold_diff, order = c(0,0,lag))
+  tibble(LAG = lag,
+         AIC_AR = AIC(ar_model), BIC_AR = BIC(ar_model),
+         AIC_MA = AIC(ma_model), BIC_MA = BIC(ma_model))
+})
+
+
+# 🔎 Step 5: Coefficient Extraction (AR & MA)
+coef_list <- purrr::map(1:5, function(lag){
+  ar_model <- arima(gold_diff, order = c(lag,0,0))
+  ma_model <- arima(gold_diff, order = c(0,0,lag))
+  list(LAG = lag,
+       Coefficients_AR = ar_model$coef,
+       Coefficients_MA = ma_model$coef)
+})
+
+# Convert to a tidy table for display
+coef_tbl <- tibble::tibble(
+  LAG = purrr::map_int(coef_list, 'LAG'),
+  Coefficients_AR = purrr::map(coef_list, 'Coefficients_AR'),
+  Coefficients_MA = purrr::map(coef_list, 'Coefficients_MA')
+)
+
+# Optional: write raw lists to RDS
+saveRDS(coef_list, "gold_diff_Coefficients_List.rds")
+
+
+# 🤖 Step 6: Model via `auto.arima()` and Diagnostics
+
+Model <- forecast::auto.arima(gold_diff)
+summary(Model)
+
+
+
+residual_series <- residuals(Model)
+plot(residual_series, main = "Residuals of Selected Model", ylab = "Residuals")
+Acf(residual_series, main = "ACF of Residuals")
+Pacf(residual_series, main = "PACF of Residuals")
+qqnorm(residual_series); qqline(residual_series, col = "red")
+
+
+**Stationarity (ADF) and White-Noise Check (Box/Box–Pierce):**
+tseries::adf.test(gold_diff)
+Box.test(residual_series)  # Box–Pierce by default
+
+
+# 🔮 Step 7: Forecasting the Differenced Series
+> Note: Forecasts are on the **differenced** series; translating to level forecasts would require integrating back (cumulative sum using last observed level). Here we display the differenced forecasts used in your workflow.
+
+h <- 10
+f1 <- forecast::forecast(Model, h = h, level = c(95, 90))
+f1
+plot(f1, main = "Gold Price Forecast (Differenced Series)", ylab = "Δ Gold Price")
+
+# 📝 Interpretation Template (edit with your run results)
+- **Identification:** If `auto.arima()` selects ARIMA(0,1,0), it implies a random walk in levels after one differencing, with no AR/MA terms.
+- **Information Criteria:** Compare AIC/BIC across AR vs MA sweeps; the **lowest** indicates the preferred structure (e.g., MA(4) in your sample outputs).
+- **Residuals:** ACF/PACF of residuals should show no significant structure; borderline Box–Pierce p-values suggest potential model improvements.
+- **ADF:** If p-value > 0.05, stationarity not established (even post-differencing) — consider transformations or alternative specifications.
+- **Forecasts:** Expect widening intervals with horizon length. Flat point forecasts in Δ imply random walk behavior in levels.
+
+# 🗂️ Reproducibility
+sessionInfo()
+
+
+# 📤 Outputs
+- `gold_diff_AIC_BIC_Results.csv` — AIC/BIC table for AR vs MA sweeps (lags 1–5)
+- `gold_diff_Coefficients_List.rds` — raw coefficients list for custom inspection
+
+# 📎 Notes
+- Ensure the CSV is correctly formatted as: `Year, GoldPrice` (₹ per kg).
+- To produce **level forecasts**, use `forecast::Arima` on the **level series** with `order = (p,1,q)` and let `forecast()` output level forecasts (or manually integrate the differenced forecasts using the last observed level).
+- Always validate with the latest RBI data if updating beyond your CSV.
